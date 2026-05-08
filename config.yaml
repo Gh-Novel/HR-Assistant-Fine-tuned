@@ -1,0 +1,153 @@
+# ============================================================
+# TechMojo HR Assistant — Master Configuration
+# QLoRA Fine-tuning of Llama 3.1 8B on TechMojo internal HR policies.
+#
+# Why this project: TechMojo's internal HR procedures (specific stakeholders,
+# tools like Freshteams/ADP, exact day counts) do NOT exist in Llama's
+# pretraining corpus, so fine-tuning genuinely *creates* capability instead
+# of restyling existing knowledge. Verified OOD via data/techmojo/ood_check.py
+# before training started.
+#
+# Hardware: Apple Silicon Mac Mini 24GB Unified Memory
+# Framework: MLX-LM (Apple's native LLM library)
+# Source dataset: PranavTM/LeavePolicy on HuggingFace (117 examples)
+# ============================================================
+
+model:
+  name: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"
+  max_seq_length: 768
+  # ── System prompts ────────────────────────────────────────────────────────
+  # `system_prompt` MUST stay aligned with the prompt used during training
+  # (in data/prepare_dataset.py — every training example bakes this exact
+  # text in as the system message). Changing it at inference time degrades
+  # the model's recall of memorized policies, because the model learned to
+  # respond *given that specific system context*.
+  #
+  # `base_system_prompt` is what the **base** model in side-by-side mode
+  # sees — deliberately generic, no mention of TechMojo. That way the base
+  # model has no priming and falls back to either a generic answer or an
+  # honest "I don't have specific information about this organization"
+  # disclaimer. This makes the side-by-side a true OOD comparison: both
+  # models see the same user question; only the fine-tuned model has been
+  # told what TechMojo is and trained on its policies.
+  #
+  # Future work: to get an explanation-plus-policy-quote answer style
+  # *without* breaking memorization, augment the training data so each
+  # assistant response itself follows that format, then retrain. Don't
+  # try to layer it in via a longer inference-time system prompt.
+  system_prompt: >
+    You are an HR assistant at TechMojo. Answer employee questions about
+    TechMojo's internal HR policies — leave, sabbatical, referrals,
+    payroll documents, manager escalation paths — accurately and concisely.
+    If a question is not covered by TechMojo's policies, say so clearly
+    rather than inventing a plausible-sounding answer.
+
+  base_system_prompt: >
+    You are a helpful AI assistant. Answer the user's question accurately
+    and honestly. If the user asks about a specific company, organization,
+    internal tool, or proprietary policy that you do not have verified
+    information about, say so clearly and avoid inventing details.
+
+lora:
+  r: 16
+  alpha: 16
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  # Llama 3.1 8B has 32 transformer layers; 16 covers the top half.
+  # Must be a positive int — mlx_lm.lora's --num-layers does not safely accept
+  # values <= 0 (caused NaN losses in an earlier project).
+  lora_layers: 16
+
+training:
+  batch_size: 1
+  gradient_accumulation: 8
+  # Small dataset (~100 train examples), so we lean on epochs to get enough
+  # gradient steps. ~100 / 8 ≈ 12 effective steps per epoch × 30 epochs ≈
+  # 360 optimizer updates. That's enough to memorize the policies without
+  # destroying base capability. Watch eval loss — stop if it stops dropping.
+  epochs: 30
+  val_batches: 17
+  learning_rate: 1.0e-4   # safe; the 2e-4 + no-warmup combo NaN-exploded before
+  lr_scheduler: "cosine"
+  warmup_steps: 30
+  save_every: 50
+  val_every: 50
+  generate_every: 50
+  max_new_tokens: 200
+  output_dir: "adapters_techmojo"
+  early_stopping_patience: 0
+
+data:
+  train_file: "data/train.jsonl"
+  val_file: "data/val.jsonl"
+  eval_file: "data/eval.jsonl"
+  # Source dataset on HuggingFace
+  source_dataset: "PranavTM/LeavePolicy"
+  source_file: "techmojo_leave_policy_finetune.jsonl"
+  # Local raw cache
+  raw_file: "data/techmojo/raw.jsonl"
+  # Train / eval split. With 117 examples we hold out ~15% for held-out eval.
+  eval_fraction: 0.15
+  seed: 42
+  # The prepare_dataset.py also writes val.jsonl as a copy of eval for mlx_lm
+  # (which expects valid.jsonl during training). Keeping eval and val identical
+  # is fine here since we just want a small in-training-loss-tracking signal.
+
+hardware:
+  framework: "mlx"
+  dtype: "bfloat16"
+
+evaluation:
+  # Output paths for the QA evaluator
+  baseline_scores_file: "evaluation/baseline_scores.json"
+  finetuned_scores_file: "evaluation/finetuned_scores.json"
+  # Generation params for eval. Low temp = more deterministic similarity scores.
+  temperature: 0.2
+  top_p: 0.9
+  max_new_tokens: 200
+
+logging:
+  use_wandb: false       # set to true if you have a real WANDB_API_KEY in .env
+  wandb_project: "techmojo-hr"
+  wandb_entity: null
+  local_log_file: "training/training_log.jsonl"
+
+inference:
+  # Curated best-checkpoint dir, holds iter 350's weights.
+  #
+  # IMPORTANT: val loss was MISLEADING for this task. Val bottomed at
+  # iter 200 (0.907) and climbed back to 1.134 by iter 360. Initially we
+  # took iter 200 as "best" — but the model at iter 200 had only learned
+  # the explanation+policy *format*, not the per-example *facts*, and
+  # cross-contaminated semantics between examples (e.g. it hallucinated
+  # "appraisal via phone call" by leaking the phone-call wording from a
+  # different IT-support training example).
+  #
+  # This is a memorization task on a small specialized dataset (99 train
+  # examples). The goal IS for the model to recite the policy book, not
+  # generalize to novel questions. By iter 350 the model has memorized
+  # both format and facts; val loss going up just means it gets more
+  # confident in memorized answers (occasionally over-confidently wrong
+  # on the held-out 18 examples it has never seen — which is fine).
+  #
+  # adapters_techmojo_best/ now contains iter 350's weights as
+  # adapters.safetensors. Iter 200 weights live in
+  # adapters_techmojo/0000200_adapters.safetensors if you ever need to
+  # compare.
+  adapter_path: "adapters_techmojo_best"
+  api_host: "0.0.0.0"
+  api_port: 8000
+  temperature: 0.3
+  top_p: 0.9
+  max_new_tokens: 300
+
+export:
+  hub_model_id: "Firstminer/techmojo-hr-llama-3.1-8b"
+  push_adapter_only: true

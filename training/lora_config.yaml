@@ -1,0 +1,9 @@
+# LoRA hyperparameters for mlx_lm training.
+# Passed via: python -m mlx_lm lora -c training/lora_config.yaml ...
+#
+# scale = alpha / rank  →  16 / 16 = 1.0  (standard, stable setting)
+# Previous training had rank=8, scale=20.0 (alpha≈160) — way too high.
+lora_parameters:
+  rank: 16
+  dropout: 0.05
+  scale: 1.0

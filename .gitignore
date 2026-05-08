@@ -1,0 +1,68 @@
+# ── Generated data files ─────────────────────────────────────
+data/train.jsonl
+data/val.jsonl
+data/eval.jsonl
+data/test.jsonl
+data/valid.jsonl
+data/dataset_meta.json
+
+# ── Scratch / per-run logs ───────────────────────────────────
+responce.txt
+test.txt
+training/full_run.log
+
+# ── Model weights and adapters ───────────────────────────────
+# Exclude raw training-output checkpoints (~640 MB, every 50 iters)
+# but KEEP the curated deployed adapter so the HF Space can serve it.
+adapters/
+adapters_techmojo/
+*.bin
+*.pt
+*.pth
+# Catch any other safetensors but explicitly allow the deployed adapter
+*.safetensors
+!adapters_techmojo_best/adapters.safetensors
+
+# ── Evaluation results ────────────────────────────────────────
+evaluation/baseline_scores.json
+evaluation/finetuned_scores.json
+
+# ── Training logs ─────────────────────────────────────────────
+training/training_log.jsonl
+
+# ── Environment ───────────────────────────────────────────────
+.env
+*.env
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+
+# ── Jupyter ───────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── macOS ─────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Wandb ─────────────────────────────────────────────────────
+wandb/
+
+# ── IDE ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
