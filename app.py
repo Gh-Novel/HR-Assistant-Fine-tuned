@@ -100,7 +100,14 @@ def _get_torch_models(base_only: bool = False):
     model_name = cfg["model"].get("hf_name_linux") or cfg["model"]["name"]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16  # fp16 on both CPU + GPU to fit 8B in ~16 GB RAM
+    # Use bfloat16 on both CPU and GPU. The adapter was trained in bf16
+    # (config.yaml: hardware.dtype: bfloat16); fp16 loses small LoRA-delta
+    # magnitudes due to its narrower exponent range, which attenuates the
+    # fine-tune signal and can cause the model to drift back toward generic
+    # base-model behavior. CPU bf16 is supported by recent PyTorch builds
+    # via the OneDNN backend (slightly slower matmul on older Xeons but
+    # numerically faithful to training).
+    dtype = torch.bfloat16
 
     print(f"[app] (Transformers) Loading base model {model_name} on {device} …")
     tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
