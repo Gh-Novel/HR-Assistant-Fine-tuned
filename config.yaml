@@ -1,37 +1,54 @@
 # ============================================================
-# MedQLoRA — Master Configuration
-# QLoRA Fine-tuning of Llama 3.1 8B for Medical Q&A
+# TechMojo HR Assistant — Master Configuration
+# QLoRA Fine-tuning of Llama 3.1 8B on TechMojo internal HR policies.
+#
 # Hardware: Apple Silicon Mac Mini 24GB Unified Memory
-# Framework: MLX-LM (Apple's native LLM library)
+# Framework: MLX-LM (Apple) for training; Transformers + PEFT (Linux/HF Space) for serving.
+# Source dataset: PranavTM/LeavePolicy on HuggingFace (117 examples)
 # ============================================================
 
 model:
-  # HuggingFace model ID — pre-quantized 4-bit for Apple Silicon
-  # Switched to Llama 3.1 8B for fresh training run.
+  # ── Model identifiers per backend ──────────────────────────────────────────
+  # `name` is the MLX-quantized 4-bit repo, used for **training** on Apple
+  # Silicon and for **local** inference via mlx-lm. It is NOT loadable by
+  # PyTorch/Transformers on Linux.
+  #
+  # `hf_name_linux` is the standard PyTorch repo, used for **HF Space serving**
+  # via Transformers + PEFT. We point it at NousResearch's re-publish so the
+  # Space doesn't need a HF token / gated-model approval. The weights are
+  # identical to Meta's official Llama-3.1-8B-Instruct.
   name: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"
-  # IMPORTANT: The `mlx-community/*-4bit` repos are MLX-format weights and are
-  # not directly loadable by PyTorch/Transformers on Linux (HF Spaces).
-  # For Spaces live inference (Transformers backend), use the official HF model id:
-  hf_name_linux: "meta-llama/Meta-Llama-3.1-8B-Instruct"
-  # Previous fast starter model:
-  # name: "mlx-community/Llama-3.2-3B-Instruct-4bit"
-  # Fallback ungated option (no HF token required):
-  # name: "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
-  max_seq_length: 768    # reduced for safer 8B training on 24GB unified memory
-  # System prompt injected before every user message
+  hf_name_linux: "NousResearch/Meta-Llama-3.1-8B-Instruct"
+
+  max_seq_length: 768
+
+  # ── System prompts ────────────────────────────────────────────────────────
+  # `system_prompt` MUST stay aligned with the prompt used during training
+  # (in data/prepare_dataset.py — every training example bakes this exact
+  # text in as the system message). Changing it at inference time degrades
+  # the model's recall of memorized policies.
+  #
+  # `base_system_prompt` is what the **base** model in side-by-side mode
+  # sees — deliberately generic, no mention of TechMojo. Same user question,
+  # only the fine-tuned model has been told what TechMojo is and trained on
+  # its policies.
   system_prompt: >
-    You are an expert medical AI assistant. Answer medical questions accurately,
-    concisely, and with appropriate clinical detail. When uncertain, say so clearly.
-    Do not provide personal medical advice — always recommend consulting a healthcare provider.
+    You are an HR assistant at TechMojo. Answer employee questions about
+    TechMojo's internal HR policies — leave, sabbatical, referrals,
+    payroll documents, manager escalation paths — accurately and concisely.
+    If a question is not covered by TechMojo's policies, say so clearly
+    rather than inventing a plausible-sounding answer.
+
+  base_system_prompt: >
+    You are a helpful AI assistant. Answer the user's question accurately
+    and honestly. If the user asks about a specific company, organization,
+    internal tool, or proprietary policy that you do not have verified
+    information about, say so clearly and avoid inventing details.
 
 lora:
-  # LoRA rank — controls expressivity vs parameter count
-  # r=16 trains 0.8% of total parameters, good quality/speed balance
   r: 16
-  # LoRA scaling factor (alpha/r = 1.0 keeps updates at original scale)
   alpha: 16
   dropout: 0.05
-  # Target all linear projection layers for best medical domain adaptation
   target_modules:
     - q_proj
     - k_proj
@@ -40,97 +57,71 @@ lora:
     - gate_proj
     - up_proj
     - down_proj
-  # Number of transformer layers to apply LoRA to (from the top).
-  # Use a POSITIVE int — mlx_lm.lora's --num-layers does not safely accept -1
-  # (passing -1 caused NaN losses in an earlier run). 16 is mlx_lm's tested default.
-  # Llama 3.2 3B has 28 transformer layers; 16 covers the top half.
+  # Llama 3.1 8B has 32 transformer layers; 16 covers the top half.
+  # Must be a positive int — mlx_lm.lora's --num-layers does not safely accept
+  # values <= 0 (caused NaN losses in an earlier run).
   lora_layers: 16
 
 training:
   batch_size: 1
-  # Effective batch = batch_size * gradient_accumulation = 8
   gradient_accumulation: 8
-  # Number of validation mini-batches per eval pass (set high for stable val estimate)
-  val_batches: 100
-  learning_rate: 1.0e-4   # was 2.0e-4 — lowered after a NaN explosion at 2e-4 with no warmup
+  # Small dataset (~100 train examples), so we lean on epochs to get enough
+  # gradient steps. ~100 / 8 ≈ 12 effective steps per epoch × 30 epochs ≈
+  # 360 optimizer updates.
+  epochs: 30
+  val_batches: 17
+  learning_rate: 1.0e-4
   lr_scheduler: "cosine"
-  warmup_steps: 100
-  epochs: 3
-  # Save adapter checkpoint every N steps
-  save_every: 250
-  # Validate every N steps
-  val_every: 250
-  # Generate sample completions every N steps (for W&B logging)
-  generate_every: 250
-  # Max tokens to generate during sample generation
-  max_new_tokens: 256
-  # Output directory for adapter weights
-  output_dir: "adapters_8b_fresh"
-  # Early stopping patience (in validation steps, 0 = disabled)
+  warmup_steps: 30
+  save_every: 50
+  val_every: 50
+  generate_every: 50
+  max_new_tokens: 200
+  output_dir: "adapters_techmojo"
   early_stopping_patience: 0
 
 data:
   train_file: "data/train.jsonl"
   val_file: "data/val.jsonl"
   eval_file: "data/eval.jsonl"
-  # Fraction of training data to use as validation
-  val_split: 0.10
-  # Random seed for reproducible splits
+  source_dataset: "PranavTM/LeavePolicy"
+  source_file: "techmojo_leave_policy_finetune.jsonl"
+  raw_file: "data/techmojo/raw.jsonl"
+  eval_fraction: 0.15
   seed: 42
-  # Maximum number of training examples (null = use all)
-  max_train_examples: null
-  # Datasets to merge for training
-  train_datasets:
-    - id: "medalpaca/medical_meadow_medqa"
-      split: "train"
-      format: "qa"          # {question, answer}
-    - id: "medalpaca/medical_meadow_wikidoc"
-      split: "train"
-      format: "instruction"  # {instruction, input, output}
-  # Evaluation-only dataset (NEVER used in training)
-  eval_dataset:
-    id: "qiaojin/PubMedQA"
-    config: "pqa_labeled"
-    split: "train"           # PubMedQA only has train split; we use subset for eval
-    format: "pubmedqa"       # {question, context, final_decision}
-    # Number of examples to evaluate (null = all labeled ~1000)
-    num_eval_examples: 500
 
 hardware:
   framework: "mlx"
   dtype: "bfloat16"
 
 evaluation:
-  # Scores file paths (auto-created by eval scripts)
   baseline_scores_file: "evaluation/baseline_scores.json"
   finetuned_scores_file: "evaluation/finetuned_scores.json"
-  # PubMedQA answer choices
-  answer_choices: ["yes", "no", "maybe"]
-  # Temperature for evaluation generation (low = deterministic)
-  temperature: 0.1
+  temperature: 0.2
   top_p: 0.9
+  max_new_tokens: 200
 
 logging:
-  # Set to true if you have a W&B account + WANDB_API_KEY in .env
-  use_wandb: true
-  wandb_project: "medqlora"
-  wandb_entity: null  # null = use default entity
-  # Always log to local file regardless of W&B
+  use_wandb: false
+  wandb_project: "techmojo-hr"
+  wandb_entity: null
   local_log_file: "training/training_log.jsonl"
 
 inference:
-  # Path to adapter weights (set after training completes)
-  adapter_path: "adapters_8b_fresh"
-  # FastAPI server settings
+  # ── Adapter directories ───────────────────────────────────────────────────
+  # `adapter_path` is the MLX-format adapter served on Apple Silicon via mlx-lm.
+  # `adapter_path_linux` is the PEFT-format adapter served on Linux/Spaces via
+  # Transformers + PEFT. The PEFT version is generated from the MLX one by
+  # tools/convert_mlx_to_peft.py — same weights, key names renamed to PEFT's
+  # convention, plus an adapter_config.json with the LoRA hyperparameters.
+  adapter_path: "adapters_techmojo_best"
+  adapter_path_linux: "adapters_techmojo_best_peft"
   api_host: "0.0.0.0"
   api_port: 8000
-  # Generation defaults for inference
-  temperature: 0.7
+  temperature: 0.3
   top_p: 0.9
-  max_new_tokens: 512
+  max_new_tokens: 300
 
 export:
-  # Your HuggingFace username/repo-name
-  # Set HF_TOKEN in .env before running push_to_hub.py
-  hub_model_id: "your-username/medqlora-llama-3.1-8b"
-  push_adapter_only: true  # push only ~150MB adapters, not full 16GB model
+  hub_model_id: "Firstminer/techmojo-hr-llama-3.1-8b"
+  push_adapter_only: true

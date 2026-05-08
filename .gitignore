@@ -19,9 +19,12 @@ adapters_techmojo/
 *.bin
 *.pt
 *.pth
-# Catch any other safetensors but explicitly allow the deployed adapter
+# Catch any other safetensors but explicitly allow the deployed adapters:
+#  - adapters_techmojo_best/         (MLX layout, served on Apple Silicon)
+#  - adapters_techmojo_best_peft/    (PEFT layout, served on Linux/Spaces)
 *.safetensors
 !adapters_techmojo_best/adapters.safetensors
+!adapters_techmojo_best_peft/adapter_model.safetensors
 
 # ── Evaluation results ────────────────────────────────────────
 evaluation/baseline_scores.json

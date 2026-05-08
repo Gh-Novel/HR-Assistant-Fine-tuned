@@ -50,73 +50,115 @@ except (ImportError, OSError) as _mlx_err:
     print("[app] Falling back to a non-MLX inference backend (Transformers) if possible.")
 
 
-# ── Transformers (Linux/Spaces) fallback ───────────────────────────────────────
+# ── Transformers + PEFT (Linux/Spaces) backend ─────────────────────────────────
+# The MLX adapter (adapters_techmojo_best/adapters.safetensors) was converted
+# to PEFT format ahead of time by tools/convert_mlx_to_peft.py and committed
+# under cfg["inference"]["adapter_path_linux"]. On Linux we load the ungated
+# `NousResearch/Meta-Llama-3.1-8B-Instruct` repo and apply that adapter.
 TORCH_AVAILABLE = False
 TORCH_UNAVAILABLE_REASON = ""
 try:
     import torch  # noqa: F401
     from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: F401
-
     TORCH_AVAILABLE = True
 except Exception as _torch_err:  # noqa: BLE001
     TORCH_AVAILABLE = False
     TORCH_UNAVAILABLE_REASON = str(_torch_err) or "torch/transformers not available"
 
-_torch_models = {}
+PEFT_AVAILABLE = False
+PEFT_UNAVAILABLE_REASON = ""
+try:
+    from peft import PeftModel  # noqa: F401
+    PEFT_AVAILABLE = True
+except Exception as _peft_err:  # noqa: BLE001
+    PEFT_AVAILABLE = False
+    PEFT_UNAVAILABLE_REASON = str(_peft_err) or "peft not available"
+
+_torch_state = {}
 
 
 def _get_torch_models(base_only: bool = False):
     """
-    Load models via Transformers for Linux (HF Spaces) runtime.
+    Load the Transformers + PEFT stack used on Linux (HF Spaces).
 
-    Notes:
-    - This loads the base model from Hugging Face Hub.
-    - Your MLX adapter files are not guaranteed to be directly compatible with
-      Transformers/PEFT. If no compatible adapter is available, both panels
-      will use the base model.
+    We load ONE base model into memory, then wrap it with PeftModel (which
+    attaches the LoRA adapter). At inference time:
+      - For the "finetuned" panel, the adapter is enabled (default).
+      - For the "base" panel, we run inside `peft_model.disable_adapter()` so
+        the same weights serve both panels with the adapter on/off — half
+        the RAM footprint of loading the base twice, which matters on the
+        16 GB free Space tier.
+
+    Returns a dict with keys: peft_model, tokenizer, device, has_adapter.
     """
-    if _torch_models:
-        return _torch_models
+    if _torch_state:
+        return _torch_state
 
     if not TORCH_AVAILABLE:
-        raise RuntimeError(TORCH_UNAVAILABLE_REASON)
+        raise RuntimeError(f"torch/transformers unavailable: {TORCH_UNAVAILABLE_REASON}")
 
-    # Use a Transformers-compatible model id on Linux (HF Spaces).
-    # The MLX `mlx-community/*-4bit` repos are not loadable by Transformers.
     model_name = cfg["model"].get("hf_name_linux") or cfg["model"]["name"]
 
-    # Best-effort: GPU if available, else CPU.
-    # Important: on CPU, float32 often exceeds HF Spaces 16Gi RAM for 8B models.
-    # We prefer float16 on CPU to reduce memory (slower, but avoids OOM).
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16  # use fp16 on both CPU and GPU for memory
+    dtype = torch.float16  # fp16 on both CPU + GPU to fit 8B in ~16 GB RAM
 
-    print(f"[app] (Transformers) Loading model on {device} …")
+    print(f"[app] (Transformers) Loading base model {model_name} on {device} …")
     tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    # If running on GPU, let Transformers shard automatically.
-    # If running on CPU, force CPU device_map so weights load directly to CPU.
     device_map = "auto" if device == "cuda" else {"": "cpu"}
-
-    model = AutoModelForCausalLM.from_pretrained(
+    base_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
         device_map=device_map,
         low_cpu_mem_usage=True,
     )
 
-    _torch_models["base"] = (model, tok, device)
-    _torch_models["finetuned"] = _torch_models["base"]
-    return _torch_models
+    # Apply the converted PEFT adapter.
+    adapter_dir_name = cfg["inference"].get("adapter_path_linux", "")
+    adapter_dir = ROOT / adapter_dir_name if adapter_dir_name else None
+    has_adapter = False
+    peft_model = base_model
+
+    if adapter_dir and adapter_dir.exists() and (adapter_dir / "adapter_config.json").exists():
+        if not PEFT_AVAILABLE:
+            print(
+                f"[app] ⚠ PEFT adapter present at {adapter_dir.name} but `peft` "
+                f"failed to import: {PEFT_UNAVAILABLE_REASON}. Both panels will "
+                f"show the base model."
+            )
+        else:
+            print(f"[app] Attaching LoRA adapter from {adapter_dir.name} …")
+            peft_model = PeftModel.from_pretrained(base_model, str(adapter_dir))
+            peft_model.eval()
+            has_adapter = True
+            print(f"[app] ✓ Adapter applied. Base panel will use disable_adapter() context.")
+    else:
+        print(
+            f"[app] ⚠ No PEFT adapter directory at "
+            f"{adapter_dir_name or '(adapter_path_linux not set)'} — "
+            f"both panels will show the base model."
+        )
+
+    _torch_state.update(
+        peft_model=peft_model,
+        tokenizer=tok,
+        device=device,
+        has_adapter=has_adapter,
+    )
+    return _torch_state
 
 
 def _infer_torch(model_key: str, question: str, history: list, max_tokens: int, temperature: float) -> tuple[str, float]:
     import torch
+    from contextlib import nullcontext
 
-    models = _get_torch_models()
-    model, tok, device = models[model_key]
+    state = _get_torch_models()
+    model = state["peft_model"]
+    tok = state["tokenizer"]
+    device = state["device"]
+    has_adapter = state["has_adapter"]
 
     system_prompt = (
         FINETUNED_SYSTEM_PROMPT if model_key == "finetuned" else BASE_SYSTEM_PROMPT
@@ -128,8 +170,15 @@ def _infer_torch(model_key: str, question: str, history: list, max_tokens: int, 
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tok(prompt, return_tensors="pt").to(device)
 
+    # For the base panel, disable the LoRA adapter so the same weights produce
+    # un-tuned output. nullcontext is a no-op when no adapter is loaded.
+    if model_key == "base" and has_adapter:
+        adapter_ctx = model.disable_adapter()
+    else:
+        adapter_ctx = nullcontext()
+
     t0 = time.time()
-    with torch.no_grad():
+    with torch.no_grad(), adapter_ctx:
         out = model.generate(
             **inputs,
             max_new_tokens=int(max_tokens),
@@ -139,10 +188,10 @@ def _infer_torch(model_key: str, question: str, history: list, max_tokens: int, 
         )
     latency = time.time() - t0
 
-    text = tok.decode(out[0], skip_special_tokens=True)
-    # Return only newly generated part (best-effort).
-    answer = text[len(tok.decode(inputs["input_ids"][0], skip_special_tokens=True)) :].strip()
-    return answer or text.strip(), latency
+    # Return only the newly generated part by slicing off the prompt's tokens.
+    new_tokens = out[0, inputs["input_ids"].shape[1]:]
+    answer = tok.decode(new_tokens, skip_special_tokens=True).strip()
+    return answer or "(empty response)", latency
 
 FINETUNED_SYSTEM_PROMPT = cfg["model"]["system_prompt"].strip()
 
