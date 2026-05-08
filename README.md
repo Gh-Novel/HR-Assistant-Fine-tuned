@@ -1,15 +1,3 @@
----
-title: HR Assistant Fine-tuned
-emoji: 🏢
-colorFrom: blue
-colorTo: indigo
-sdk: gradio
-sdk_version: 6.14.0
-app_file: app.py
-pinned: false
-license: llama3
-short_description: QLoRA fine-tune of Llama 3.1 8B on TechMojo HR policies
----
 
 # TechMojo HR Assistant — QLoRA Fine-tune of Llama 3.1 8B
 
