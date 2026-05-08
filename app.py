@@ -33,6 +33,23 @@ def load_config() -> dict:
 
 cfg = load_config()
 
+# ── MLX availability check ────────────────────────────────────────────────────
+# `mlx-lm` only runs on Apple Silicon. On Linux (e.g. the HF Spaces runtime),
+# `import mlx.core` fails with `OSError: libmlx.so: cannot open shared object
+# file`. We probe at import time so the UI can boot even when the inference
+# backend is missing — the chat handler then shows a clear notice instead of
+# a 500 traceback.
+try:
+    import mlx.core  # noqa: F401
+    MLX_AVAILABLE = True
+    MLX_UNAVAILABLE_REASON = ""
+except (ImportError, OSError) as _mlx_err:
+    MLX_AVAILABLE = False
+    MLX_UNAVAILABLE_REASON = str(_mlx_err) or "MLX backend not available on this host"
+    print(f"[app] MLX backend unavailable: {MLX_UNAVAILABLE_REASON}")
+    print("[app] Live inference will be disabled; the UI will show a clear notice "
+          "and the Benchmark + About tabs still work.")
+
 FINETUNED_SYSTEM_PROMPT = cfg["model"]["system_prompt"].strip()
 
 # Base model gets a deliberately generic prompt — no mention of TechMojo.
@@ -173,6 +190,32 @@ async def respond(
     """
     if not question.strip():
         return ft_history, base_history, "", ""
+
+    # When the MLX backend isn't available (e.g. running on the HF Spaces
+    # Linux runtime instead of Apple Silicon), short-circuit with a clear
+    # explanation instead of crashing on a deferred mlx_lm import. The
+    # Benchmark Results and About tabs still showcase the project.
+    if not MLX_AVAILABLE:
+        notice = (
+            "⚠️ **Live inference is unavailable on this server.**\n\n"
+            "This demo uses Apple MLX (`mlx-lm`), which only runs on **Apple "
+            "Silicon** (M1 / M2 / M3 Mac). The HuggingFace Space runs on a "
+            "Linux container, so `libmlx.so` can't be loaded and the model "
+            "can't be served live here.\n\n"
+            "**To see the demo working:**\n"
+            "- Check the **📊 Benchmark Results** tab for the before/after numbers\n"
+            "- See the side-by-side screenshots in the project [README](https://github.com/Gh-Novel/HR-Assistant-Fine-tuned#-live-demo--side-by-side)\n"
+            "- Clone the repo and run `.venv/bin/python app.py` on a Mac with Apple Silicon"
+        )
+        ft_history = ft_history + [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": notice},
+        ]
+        base_history = base_history + [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": notice},
+        ]
+        return ft_history, base_history, "", "MLX backend unavailable on this host"
 
     # Fine-tuned response
     ft_answer, ft_latency = infer("finetuned", question, ft_history, max_tokens, temperature)
@@ -457,6 +500,21 @@ def build_app(base_only: bool = False) -> gr.Blocks:
         """)
 
         gr.HTML(f'<div class="disclaimer">{DISCLAIMER}</div>')
+
+        if not MLX_AVAILABLE:
+            gr.HTML(
+                '<div class="disclaimer" style="border-left-color:#c97a4a; '
+                'background:rgba(201,122,74,0.06); color:#e6c39a;">'
+                '<strong>Live inference is disabled on this host.</strong> '
+                'This Space is running on Linux, but the model is served via '
+                'Apple MLX (<code>mlx-lm</code>), which requires Apple Silicon. '
+                'See the <strong>📊 Benchmark Results</strong> tab and the '
+                'screenshots in the README for the actual demo, or clone the '
+                '<a href="https://github.com/Gh-Novel/HR-Assistant-Fine-tuned" '
+                'style="color:#e6c39a;text-decoration:underline;">GitHub repo</a> '
+                'and run locally on a Mac.'
+                '</div>'
+            )
 
         with gr.Tabs():
 
