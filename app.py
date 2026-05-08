@@ -83,23 +83,27 @@ def _get_torch_models(base_only: bool = False):
 
     model_name = cfg["model"]["name"]
 
-    # Best-effort: GPU if available, else CPU (8B on CPU may be very slow).
+    # Best-effort: GPU if available, else CPU.
+    # Important: on CPU, float32 often exceeds HF Spaces 16Gi RAM for 8B models.
+    # We prefer float16 on CPU to reduce memory (slower, but avoids OOM).
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
+    dtype = torch.float16  # use fp16 on both CPU and GPU for memory
 
     print(f"[app] (Transformers) Loading model on {device} …")
     tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
+    # If running on GPU, let Transformers shard automatically.
+    # If running on CPU, force CPU device_map so weights load directly to CPU.
+    device_map = "auto" if device == "cuda" else {"": "cpu"}
+
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
-        device_map="auto" if device == "cuda" else None,
+        device_map=device_map,
         low_cpu_mem_usage=True,
     )
-    if device != "cuda":
-        model = model.to(device)
 
     _torch_models["base"] = (model, tok, device)
     _torch_models["finetuned"] = _torch_models["base"]
