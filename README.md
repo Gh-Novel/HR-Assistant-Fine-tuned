@@ -13,7 +13,8 @@ short_description: QLoRA fine-tune of Llama 3.1 8B on TechMojo internal HR polic
 
 # TechMojo HR Assistant — QLoRA Fine-tune of Llama 3.1 8B
 
-[![HuggingFace](https://img.shields.io/badge/🤗-HuggingFace-yellow)](https://huggingface.co)
+[![HuggingFace Space](https://img.shields.io/badge/🤗%20Space-Live%20Demo-yellow)](https://huggingface.co/spaces/NoobNovel/HR-Assistant-Fine-tuned)
+[![GitHub](https://img.shields.io/badge/GitHub-Source-181717?logo=github)](https://github.com/Gh-Novel/HR-Assistant-Fine-tuned)
 [![MLX](https://img.shields.io/badge/Apple_MLX-Framework-blue)](https://github.com/ml-explore/mlx)
 [![Python](https://img.shields.io/badge/Python-3.11+-green)](https://python.org)
 
@@ -25,6 +26,32 @@ The base model has never seen TechMojo's specific procedures (Freshteams referra
 portal, ADP for Form 16, 5-day carry-forward limit, 3-stakeholder unplanned-leave
 escalation). We verified this with `data/techmojo/ood_check.py` before training:
 the base model either hallucinates plausible-but-wrong details or admits ignorance.
+
+🔗 **Try it live:** [HuggingFace Space — NoobNovel/HR-Assistant-Fine-tuned](https://huggingface.co/spaces/NoobNovel/HR-Assistant-Fine-tuned)
+📦 **Source code:** [GitHub — Gh-Novel/HR-Assistant-Fine-tuned](https://github.com/Gh-Novel/HR-Assistant-Fine-tuned)
+
+## 🖼️ Live Demo — Side by Side
+
+The Gradio app runs both models on the same question. The fine-tuned panel sees the
+TechMojo HR system prompt; the base panel sees a generic *"helpful assistant"* prompt
+with **no mention of TechMojo** — that's the fair OOD comparison.
+
+### Example 1 — Where to apply for leaves?
+
+![Leave application question — base hallucinates a generic HR portal walkthrough; fine-tuned cites the actual TechMojo leave management URL](images/leaves-query.png)
+
+The fine-tuned answer cites the exact TechMojo URL (`https://people.techmojo.com`)
+and the policy line. The base model gives generic "1. HR website or portal /
+2. HR office" guidance because it genuinely doesn't know the company.
+
+### Example 2 — Reporting a technical issue
+
+![Technical issue question — base lists generic troubleshooting steps; fine-tuned names the actual IT contacts and helpdesk email](images/technical-issue.png)
+
+The fine-tuned answer names the actual TechMojo IT contacts
+(*Mr. Naveen Peddi at 9966088494, Mr. Govardhan, it-helpdesk@techmojo.in*).
+The base model walks through generic "Gather information / Check documentation /
+Contact support" steps — useful generic advice, but not what an employee actually needs.
 
 ## 🎯 Key Results
 
