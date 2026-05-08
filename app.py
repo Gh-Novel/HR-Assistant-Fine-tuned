@@ -47,8 +47,96 @@ except (ImportError, OSError) as _mlx_err:
     MLX_AVAILABLE = False
     MLX_UNAVAILABLE_REASON = str(_mlx_err) or "MLX backend not available on this host"
     print(f"[app] MLX backend unavailable: {MLX_UNAVAILABLE_REASON}")
-    print("[app] Live inference will be disabled; the UI will show a clear notice "
-          "and the Benchmark + About tabs still work.")
+    print("[app] Falling back to a non-MLX inference backend (Transformers) if possible.")
+
+
+# ── Transformers (Linux/Spaces) fallback ───────────────────────────────────────
+TORCH_AVAILABLE = False
+TORCH_UNAVAILABLE_REASON = ""
+try:
+    import torch  # noqa: F401
+    from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: F401
+
+    TORCH_AVAILABLE = True
+except Exception as _torch_err:  # noqa: BLE001
+    TORCH_AVAILABLE = False
+    TORCH_UNAVAILABLE_REASON = str(_torch_err) or "torch/transformers not available"
+
+_torch_models = {}
+
+
+def _get_torch_models(base_only: bool = False):
+    """
+    Load models via Transformers for Linux (HF Spaces) runtime.
+
+    Notes:
+    - This loads the base model from Hugging Face Hub.
+    - Your MLX adapter files are not guaranteed to be directly compatible with
+      Transformers/PEFT. If no compatible adapter is available, both panels
+      will use the base model.
+    """
+    if _torch_models:
+        return _torch_models
+
+    if not TORCH_AVAILABLE:
+        raise RuntimeError(TORCH_UNAVAILABLE_REASON)
+
+    model_name = cfg["model"]["name"]
+
+    # Best-effort: GPU if available, else CPU (8B on CPU may be very slow).
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if device == "cuda" else torch.float32
+
+    print(f"[app] (Transformers) Loading model on {device} …")
+    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=dtype,
+        device_map="auto" if device == "cuda" else None,
+        low_cpu_mem_usage=True,
+    )
+    if device != "cuda":
+        model = model.to(device)
+
+    _torch_models["base"] = (model, tok, device)
+    _torch_models["finetuned"] = _torch_models["base"]
+    return _torch_models
+
+
+def _infer_torch(model_key: str, question: str, history: list, max_tokens: int, temperature: float) -> tuple[str, float]:
+    import torch
+
+    models = _get_torch_models()
+    model, tok, device = models[model_key]
+
+    system_prompt = (
+        FINETUNED_SYSTEM_PROMPT if model_key == "finetuned" else BASE_SYSTEM_PROMPT
+    )
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": question})
+
+    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tok(prompt, return_tensors="pt").to(device)
+
+    t0 = time.time()
+    with torch.no_grad():
+        out = model.generate(
+            **inputs,
+            max_new_tokens=int(max_tokens),
+            do_sample=temperature > 0,
+            temperature=float(temperature) if temperature > 0 else None,
+            pad_token_id=tok.eos_token_id,
+        )
+    latency = time.time() - t0
+
+    text = tok.decode(out[0], skip_special_tokens=True)
+    # Return only newly generated part (best-effort).
+    answer = text[len(tok.decode(inputs["input_ids"][0], skip_special_tokens=True)) :].strip()
+    return answer or text.strip(), latency
 
 FINETUNED_SYSTEM_PROMPT = cfg["model"]["system_prompt"].strip()
 
@@ -191,31 +279,28 @@ async def respond(
     if not question.strip():
         return ft_history, base_history, "", ""
 
-    # When the MLX backend isn't available (e.g. running on the HF Spaces
-    # Linux runtime instead of Apple Silicon), short-circuit with a clear
-    # explanation instead of crashing on a deferred mlx_lm import. The
-    # Benchmark Results and About tabs still showcase the project.
     if not MLX_AVAILABLE:
-        notice = (
-            "⚠️ **Live inference is unavailable on this server.**\n\n"
-            "This demo uses Apple MLX (`mlx-lm`), which only runs on **Apple "
-            "Silicon** (M1 / M2 / M3 Mac). The HuggingFace Space runs on a "
-            "Linux container, so `libmlx.so` can't be loaded and the model "
-            "can't be served live here.\n\n"
-            "**To see the demo working:**\n"
-            "- Check the **📊 Benchmark Results** tab for the before/after numbers\n"
-            "- See the side-by-side screenshots in the project [README](https://github.com/Gh-Novel/HR-Assistant-Fine-tuned#-live-demo--side-by-side)\n"
-            "- Clone the repo and run `.venv/bin/python app.py` on a Mac with Apple Silicon"
-        )
-        ft_history = ft_history + [
-            {"role": "user", "content": question},
-            {"role": "assistant", "content": notice},
-        ]
-        base_history = base_history + [
-            {"role": "user", "content": question},
-            {"role": "assistant", "content": notice},
-        ]
-        return ft_history, base_history, "", "MLX backend unavailable on this host"
+        # HF Spaces / Linux: try Transformers fallback.
+        try:
+            ft_answer, ft_latency = _infer_torch("finetuned", question, ft_history, max_tokens, temperature)
+            base_answer, base_latency = _infer_torch("base", question, base_history, max_tokens, temperature)
+        except Exception as e:  # noqa: BLE001
+            notice = (
+                "⚠️ **Live inference couldn't start on this Space.**\n\n"
+                "This app can run either:\n"
+                "- **Apple MLX** (macOS + Apple Silicon), or\n"
+                "- **Transformers** (recommended: GPU Space).\n\n"
+                f"Error: `{str(e)[:400]}`\n\n"
+                "**Fix:** switch the Space hardware to a GPU (T4/A10G), or run locally on a Mac."
+            )
+            ft_history = ft_history + [{"role": "user", "content": question}, {"role": "assistant", "content": notice}]
+            base_history = base_history + [{"role": "user", "content": question}, {"role": "assistant", "content": notice}]
+            return ft_history, base_history, "", "No inference backend available"
+
+        ft_history = ft_history + [{"role": "user", "content": question}, {"role": "assistant", "content": ft_answer}]
+        base_history = base_history + [{"role": "user", "content": question}, {"role": "assistant", "content": base_answer}]
+        status = f"✅ (Transformers) Fine-tuned: {ft_latency:.2f}s | Base: {base_latency:.2f}s"
+        return ft_history, base_history, "", status
 
     # Fine-tuned response
     ft_answer, ft_latency = infer("finetuned", question, ft_history, max_tokens, temperature)
@@ -505,14 +590,10 @@ def build_app(base_only: bool = False) -> gr.Blocks:
             gr.HTML(
                 '<div class="disclaimer" style="border-left-color:#c97a4a; '
                 'background:rgba(201,122,74,0.06); color:#e6c39a;">'
-                '<strong>Live inference is disabled on this host.</strong> '
-                'This Space is running on Linux, but the model is served via '
-                'Apple MLX (<code>mlx-lm</code>), which requires Apple Silicon. '
-                'See the <strong>📊 Benchmark Results</strong> tab and the '
-                'screenshots in the README for the actual demo, or clone the '
-                '<a href="https://github.com/Gh-Novel/HR-Assistant-Fine-tuned" '
-                'style="color:#e6c39a;text-decoration:underline;">GitHub repo</a> '
-                'and run locally on a Mac.'
+                '<strong>Running on Linux.</strong> '
+                'This Space will try a <strong>Transformers</strong> fallback backend for live inference. '
+                'For best performance, use a <strong>GPU Space</strong>. '
+                'If loading fails, the app will show an actionable error message.'
                 '</div>'
             )
 
