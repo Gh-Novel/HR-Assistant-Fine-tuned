@@ -4,8 +4,15 @@
 # ============================================================
 
 # ── Core MLX stack (Apple Silicon native) ───────────────────
-mlx>=0.16.0
-mlx-lm>=0.16.0           # MLX-LM: model loading, generation, LoRA training
+# Only install on macOS (Apple Silicon). On Linux (HF Spaces), these will fail.
+mlx>=0.16.0; platform_system == "Darwin"
+mlx-lm>=0.16.0; platform_system == "Darwin"           # MLX-LM: model loading, generation, LoRA training
+
+# ── Linux / HF Spaces inference stack (Transformers) ─────────
+# Torch is required for live inference on Spaces (Linux).
+torch>=2.3.0; platform_system == "Linux"
+accelerate>=0.30.0; platform_system == "Linux"
+peft>=0.11.0; platform_system == "Linux"
 
 # ── HuggingFace ecosystem ────────────────────────────────────
 huggingface_hub>=0.23.0  # model download, push to Hub
