@@ -81,7 +81,9 @@ def _get_torch_models(base_only: bool = False):
     if not TORCH_AVAILABLE:
         raise RuntimeError(TORCH_UNAVAILABLE_REASON)
 
-    model_name = cfg["model"]["name"]
+    # Use a Transformers-compatible model id on Linux (HF Spaces).
+    # The MLX `mlx-community/*-4bit` repos are not loadable by Transformers.
+    model_name = cfg["model"].get("hf_name_linux") or cfg["model"]["name"]
 
     # Best-effort: GPU if available, else CPU.
     # Important: on CPU, float32 often exceeds HF Spaces 16Gi RAM for 8B models.
