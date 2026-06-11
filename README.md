@@ -14,7 +14,7 @@ short_description: QLoRA fine-tune of Llama 3.1 8B on TechMojo HR policies
 
 # TechMojo HR Assistant — QLoRA Fine-tune of Llama 3.1 8B
 
-[![HuggingFace Space](https://img.shields.io/badge/🤗%20Space-Live%20Demo-yellow)](https://huggingface.co/spaces/NoobNovel/HR-Assistant-Fine-tuned)
+[![HuggingFace Space](https://img.shields.io/badge/🤗%20Space-Live%20Demo-yellow)](https://huggingface.co/spaces/novelkathor/HR-Assistant-Fine-tuned)
 [![GitHub](https://img.shields.io/badge/GitHub-Source-181717?logo=github)](https://github.com/Gh-Novel/HR-Assistant-Fine-tuned)
 [![MLX](https://img.shields.io/badge/Apple_MLX-Framework-blue)](https://github.com/ml-explore/mlx)
 [![Python](https://img.shields.io/badge/Python-3.11+-green)](https://python.org)
@@ -28,7 +28,7 @@ portal, ADP for Form 16, 5-day carry-forward limit, 3-stakeholder unplanned-leav
 escalation). We verified this with `data/techmojo/ood_check.py` before training:
 the base model either hallucinates plausible-but-wrong details or admits ignorance.
 
-🔗 **Try it live:** [HuggingFace Space — NoobNovel/HR-Assistant-Fine-tuned](https://huggingface.co/spaces/NoobNovel/HR-Assistant-Fine-tuned)
+🔗 **Try it live:** [HuggingFace Space — novelkathor/HR-Assistant-Fine-tuned](https://huggingface.co/spaces/novelkathor/HR-Assistant-Fine-tuned)
 📦 **Source code:** [GitHub — Gh-Novel/HR-Assistant-Fine-tuned](https://github.com/Gh-Novel/HR-Assistant-Fine-tuned)
 
 ## 🖼️ Live Demo — Side by Side
